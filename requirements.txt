@@ -2,3 +2,5 @@ streamlit
 pdfplumber
 pandas
 openpyxl
+thefuzz[speedup]
+python-dateutil
