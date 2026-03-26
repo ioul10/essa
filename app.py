@@ -2,82 +2,141 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import io
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 
 # Configuration de la page
-st.set_page_config(page_title="PDF vers Excel", page_icon="📊")
+st.set_page_config(page_title="PDF Pro vers Excel", page_icon="📊", layout="wide")
 
-st.title("📄 Convertisseur PDF (Tableaux) vers Excel")
+st.title("📄 Convertisseur PDF vers Excel (Structure Optimisée)")
 st.markdown("""
-Cette application extrait les tableaux d'un fichier PDF et les place 
-dans des feuilles séparées d'un fichier Excel.
+Cette version améliore la structure des tableaux et applique un style Excel professionnel 
+(bordures, en-têtes gras, largeur auto).
 """)
 
-# Widget d'upload de fichier
+# Fonction pour styliser la feuille Excel
+def style_excel_sheet(ws, df):
+    """
+    Applique un style professionnel à la feuille openpyxl
+    """
+    # Styles
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), 
+                         top=Side(style='thin'), bottom=Side(style='thin'))
+    center_alignment = Alignment(horizontal='center', vertical='center')
+
+    # 1. Styliser les en-têtes (Ligne 1)
+    for col in range(1, len(df.columns) + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = center_alignment
+
+    # 2. Styliser le corps du tableau et ajuster les largeurs
+    for row in range(2, ws.max_row + 1):
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=row, column=col)
+            cell.border = thin_border
+            # Ajustement largeur de colonne (basé sur la longueur du texte)
+            col_letter = get_column_letter(col)
+            max_length = 0
+            # On calcule la largeur max pour cette colonne
+            for r in range(1, ws.max_row + 1):
+                c_val = str(ws.cell(row=r, column=col).value)
+                if len(c_val) > max_length:
+                    max_length = len(c_val)
+            adjusted_width = (max_length + 2) * 1.2
+            ws.column_dimensions[col_letter].width = min(adjusted_width, 50) # Max 50 chars
+
+# Fonction de nettoyage du tableau brut
+def clean_table_data(table):
+    """
+    Nettoie les données brutes de pdfplumber (None -> '', strip spaces)
+    """
+    cleaned_data = []
+    for row in table:
+        cleaned_row = [str(cell).strip() if cell is not None else "" for cell in row]
+        # Ignorer les lignes entièrement vides
+        if any(cell != "" for cell in cleaned_row):
+            cleaned_data.append(cleaned_row)
+    return cleaned_data
+
 uploaded_file = st.file_uploader("Choisissez un fichier PDF", type="pdf")
 
 if uploaded_file is not None:
-    st.info("Fichier chargé avec succès. Traitement en cours...")
+    st.info("Analyse du PDF en cours...")
     
     try:
-        # Buffer pour le fichier Excel en mémoire
         excel_buffer = io.BytesIO()
+        wb = Workbook()
+        # Supprimer la feuille par défaut
+        wb.remove(wb.active)
         
-        # Ouverture du PDF
+        tables_created = 0
+        
         with pdfplumber.open(uploaded_file) as pdf:
-            all_tables = []
-            sheet_names = []
-            
             progress_bar = st.progress(0)
             
-            # Extraction des tableaux page par page
             for i, page in enumerate(pdf.pages):
-                tables = page.extract_tables()
+                # Extraction avec tolérance pour mieux grouper les mots
+                # x_tolerance: espace horizontal pour considérer que c'est la même cellule
+                # y_tolerance: espace vertical pour considérer que c'est la même ligne
+                tables = page.extract_tables(x_tolerance=5, y_tolerance=5)
                 
                 for j, table in enumerate(tables):
                     if table:
-                        # Création d'un DataFrame pandas
-                        df = pd.DataFrame(table)
+                        cleaned_data = clean_table_data(table)
                         
-                        # Nettoyage basique (remplacer les None par vide)
-                        df = df.fillna("")
-                        
-                        all_tables.append(df)
-                        
-                        # Nom de la feuille (Max 31 caractères pour Excel)
-                        sheet_name = f"Page{i+1}_Tab{j+1}"[:31]
-                        sheet_names.append(sheet_name)
+                        if len(cleaned_data) > 1: # Au moins un header + 1 ligne
+                            # Création DataFrame
+                            df = pd.DataFrame(cleaned_data[1:], columns=cleaned_data[0])
+                            
+                            # Nom de la feuille
+                            sheet_name = f"Page{i+1}_T{j+1}"[:31]
+                            ws = wb.create_sheet(title=sheet_name)
+                            
+                            # Conversion DataFrame -> Liste pour openpyxl
+                            for r_idx, row in enumerate(df.values, 2): # Commence à la ligne 2 (après header)
+                                for c_idx, value in enumerate(row, 1):
+                                    ws.cell(row=r_idx, column=c_idx, value=value)
+                            
+                            # Ajout des headers manuellement pour le style
+                            for c_idx, col_name in enumerate(df.columns, 1):
+                                ws.cell(row=1, column=c_idx, value=col_name)
+                            
+                            # Application du style
+                            style_excel_sheet(ws, df)
+                            tables_created += 1
                 
-                # Mise à jour de la barre de progression
                 progress_bar.progress((i + 1) / len(pdf.pages))
             
             progress_bar.empty()
             
-            if len(all_tables) == 0:
-                st.warning("Aucun tableau n'a été détecté dans ce PDF.")
+            if tables_created == 0:
+                st.warning("Aucun tableau structuré détecté. Essayez un PDF avec des lignes de grille visibles.")
             else:
-                st.success(f"{len(all_tables)} tableaux trouvés !")
+                st.success(f"{tables_created} tableaux extraits et formatés !")
                 
-                # Création du fichier Excel
-                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                    for df, name in zip(all_tables, sheet_names):
-                        df.to_excel(writer, sheet_name=name, index=False)
-                
-                # Préparation du téléchargement
+                # Sauvegarde du workbook
+                wb.save(excel_buffer)
                 excel_bytes = excel_buffer.getvalue()
                 
                 st.download_button(
-                    label="📥 Télécharger le fichier Excel",
+                    label="📥 Télécharger l'Excel Stylisé",
                     data=excel_bytes,
-                    file_name="tableaux_extraits.xlsx",
+                    file_name="tableaux_structures.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
-                # Aperçu des données (optionnel)
-                with st.expander("Voir un aperçu des tableaux"):
-                    for idx, df in enumerate(all_tables):
-                        st.write(f"**Feuille : {sheet_names[idx]}**")
-                        st.dataframe(df.head())
+                with st.expander("Aperçu des données brutes"):
+                    st.write("Voici comment les données ont été interprétées (avant style):")
+                    # Juste pour l'exemple, on affiche le premier tableau trouvé
+                    # (Note: dans cette version on n'a pas gardé les DF en mémoire pour l'affichage pour économiser RAM)
+                    st.info("Le téléchargement contient le résultat final formaté.")
 
     except Exception as e:
-        st.error(f"Une erreur est survenue : {e}")
-        st.write("Conseil : Assurez-vous que le PDF contient des tableaux sélectionnables (pas des images).")
+        st.error(f"Erreur : {e}")
+        st.write("Vérifiez que le PDF n'est pas protégé par un mot de passe.")
