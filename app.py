@@ -1,142 +1,150 @@
 import streamlit as st
-import pdfplumber
 import pandas as pd
 import io
+from extractor import PDFExtractor
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
-# Configuration de la page
-st.set_page_config(page_title="PDF Pro vers Excel", page_icon="📊", layout="wide")
+# Configuration
+st.set_page_config(page_title="Extracteur PDF Intelligent", page_icon="🧠", layout="wide")
 
-st.title("📄 Convertisseur PDF vers Excel (Structure Optimisée)")
+# CSS personnalisé
 st.markdown("""
-Cette version améliore la structure des tableaux et applique un style Excel professionnel 
-(bordures, en-têtes gras, largeur auto).
-""")
+<style>
+    .step-box {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 5px 0;
+    }
+    .success-box {
+        background-color: #d4edda;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 5px 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Fonction pour styliser la feuille Excel
-def style_excel_sheet(ws, df):
-    """
-    Applique un style professionnel à la feuille openpyxl
-    """
-    # Styles
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), 
-                         top=Side(style='thin'), bottom=Side(style='thin'))
-    center_alignment = Alignment(horizontal='center', vertical='center')
+st.title("🧠 Extracteur PDF Intelligent vers Excel")
+st.markdown("**Pipeline complet** : Extraction → Nettoyage → Filtrage → Mapping → Template")
 
-    # 1. Styliser les en-têtes (Ligne 1)
-    for col in range(1, len(df.columns) + 1):
-        cell = ws.cell(row=1, column=col)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.border = thin_border
-        cell.alignment = center_alignment
+# Initialisation
+extractor = PDFExtractor()
 
-    # 2. Styliser le corps du tableau et ajuster les largeurs
-    for row in range(2, ws.max_row + 1):
-        for col in range(1, ws.max_column + 1):
-            cell = ws.cell(row=row, column=col)
-            cell.border = thin_border
-            # Ajustement largeur de colonne (basé sur la longueur du texte)
-            col_letter = get_column_letter(col)
-            max_length = 0
-            # On calcule la largeur max pour cette colonne
-            for r in range(1, ws.max_row + 1):
-                c_val = str(ws.cell(row=r, column=col).value)
-                if len(c_val) > max_length:
-                    max_length = len(c_val)
-            adjusted_width = (max_length + 2) * 1.2
-            ws.column_dimensions[col_letter].width = min(adjusted_width, 50) # Max 50 chars
+# Upload
+uploaded_file = st.file_uploader("📄 Charger votre PDF (Bilan, Facture, etc.)", type="pdf")
 
-# Fonction de nettoyage du tableau brut
-def clean_table_data(table):
-    """
-    Nettoie les données brutes de pdfplumber (None -> '', strip spaces)
-    """
-    cleaned_data = []
-    for row in table:
-        cleaned_row = [str(cell).strip() if cell is not None else "" for cell in row]
-        # Ignorer les lignes entièrement vides
-        if any(cell != "" for cell in cleaned_row):
-            cleaned_data.append(cleaned_row)
-    return cleaned_data
-
-uploaded_file = st.file_uploader("Choisissez un fichier PDF", type="pdf")
-
-if uploaded_file is not None:
-    st.info("Analyse du PDF en cours...")
+if uploaded_file:
+    col1, col2 = st.columns([2, 1])
     
-    try:
+    with col1:
+        st.subheader("📊 Pipeline de Traitement")
+        
+        # Étape 1 & 2
+        with st.expander("✅ Étape 1-2: Extraction Texte & Tableaux", expanded=True):
+            full_text, tables = extractor.extract_text(uploaded_file)
+            st.write(f"**Texte extrait** : {len(full_text)} caractères")
+            st.write(f"**Tableaux détectés** : {len(tables)}")
+        
+        # Étape 3
+        with st.expander("✅ Étape 3: Nettoyage des Données", expanded=True):
+            cleaned_tables = extractor.clean_data(tables)
+            st.write(f"**Tableaux après nettoyage** : {len(cleaned_tables)}")
+        
+        # Étape 4
+        with st.expander("✅ Étape 4: Filtrage Lignes Utiles", expanded=False):
+            useful_tables = extractor.filter_useful_lines(cleaned_tables)
+            st.write(f"**Tableaux utiles** : {len(useful_tables)}")
+            
+            if useful_tables:
+                st.dataframe(pd.DataFrame(useful_tables[0][:5]))  # Aperçu
+        
+        # Étape 5
+        with st.expander("✅ Étape 5: Extraction Montants", expanded=False):
+            amounts = extractor.extract_amounts(full_text)
+            st.write(f"**Montants trouvés** : {len(amounts)}")
+            if amounts:
+                st.write(f"Exemples : {amounts[:5]}")
+        
+        # Étape 6 & 7
+        with st.expander("✅ Étape 6-7: Mapping & Template", expanded=True):
+            key_values = extractor.extract_key_values(full_text)
+            template_df = extractor.create_template_df()
+            filled_df = extractor.fill_template(key_values, template_df)
+            st.dataframe(filled_df)
+    
+    with col2:
+        st.subheader("📥 Export Excel")
+        
+        # Création Excel
         excel_buffer = io.BytesIO()
-        wb = Workbook()
-        # Supprimer la feuille par défaut
-        wb.remove(wb.active)
         
-        tables_created = 0
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            # Feuille 1: Données structurées
+            filled_df.to_excel(writer, sheet_name='Données_Extraites', index=False)
+            
+            # Feuille 2: Tableaux bruts
+            for idx, table in enumerate(useful_tables[:5]):  # Max 5 tableaux
+                if len(table) > 1:
+                    df_table = pd.DataFrame(table[1:], columns=table[0])
+                    df_table.to_excel(writer, sheet_name=f'Tableau_{idx+1}', index=False)
+            
+            # Feuille 3: Texte brut
+            text_df = pd.DataFrame({'Texte Extrait': [full_text]})
+            text_df.to_excel(writer, sheet_name='Texte_Brut', index=False)
         
-        with pdfplumber.open(uploaded_file) as pdf:
-            progress_bar = st.progress(0)
+        # Stylisation
+        from openpyxl import load_workbook
+        excel_buffer.seek(0)
+        wb = load_workbook(excel_buffer)
+        
+        for ws in wb.worksheets:
+            # En-têtes
+            for cell in ws[1]:
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+                cell.border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                                   top=Side(style='thin'), bottom=Side(style='thin'))
             
-            for i, page in enumerate(pdf.pages):
-                # Extraction avec tolérance pour mieux grouper les mots
-                # x_tolerance: espace horizontal pour considérer que c'est la même cellule
-                # y_tolerance: espace vertical pour considérer que c'est la même ligne
-                tables = page.extract_tables(x_tolerance=5, y_tolerance=5)
-                
-                for j, table in enumerate(tables):
-                    if table:
-                        cleaned_data = clean_table_data(table)
-                        
-                        if len(cleaned_data) > 1: # Au moins un header + 1 ligne
-                            # Création DataFrame
-                            df = pd.DataFrame(cleaned_data[1:], columns=cleaned_data[0])
-                            
-                            # Nom de la feuille
-                            sheet_name = f"Page{i+1}_T{j+1}"[:31]
-                            ws = wb.create_sheet(title=sheet_name)
-                            
-                            # Conversion DataFrame -> Liste pour openpyxl
-                            for r_idx, row in enumerate(df.values, 2): # Commence à la ligne 2 (après header)
-                                for c_idx, value in enumerate(row, 1):
-                                    ws.cell(row=r_idx, column=c_idx, value=value)
-                            
-                            # Ajout des headers manuellement pour le style
-                            for c_idx, col_name in enumerate(df.columns, 1):
-                                ws.cell(row=1, column=c_idx, value=col_name)
-                            
-                            # Application du style
-                            style_excel_sheet(ws, df)
-                            tables_created += 1
-                
-                progress_bar.progress((i + 1) / len(pdf.pages))
-            
-            progress_bar.empty()
-            
-            if tables_created == 0:
-                st.warning("Aucun tableau structuré détecté. Essayez un PDF avec des lignes de grille visibles.")
-            else:
-                st.success(f"{tables_created} tableaux extraits et formatés !")
-                
-                # Sauvegarde du workbook
-                wb.save(excel_buffer)
-                excel_bytes = excel_buffer.getvalue()
-                
-                st.download_button(
-                    label="📥 Télécharger l'Excel Stylisé",
-                    data=excel_bytes,
-                    file_name="tableaux_structures.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-                with st.expander("Aperçu des données brutes"):
-                    st.write("Voici comment les données ont été interprétées (avant style):")
-                    # Juste pour l'exemple, on affiche le premier tableau trouvé
-                    # (Note: dans cette version on n'a pas gardé les DF en mémoire pour l'affichage pour économiser RAM)
-                    st.info("Le téléchargement contient le résultat final formaté.")
+            # Largeur auto
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2) * 1.2
+                ws.column_dimensions[column].width = min(adjusted_width, 50)
+        
+        # Sauvegarde
+        wb.save(excel_buffer)
+        excel_bytes = excel_buffer.getvalue()
+        
+        st.download_button(
+            label="📥 Télécharger Excel Complet",
+            data=excel_bytes,
+            file_name=f"extraction_{uploaded_file.name.replace('.pdf', '')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # Stats
+        st.markdown("### 📈 Statistiques")
+        st.metric("Champs Mappés", len([v for v in key_values.values() if v]))
+        st.metric("Tableaux Exportés", min(len(useful_tables), 5))
+        st.metric("Montants Extraits", len(amounts))
 
-    except Exception as e:
-        st.error(f"Erreur : {e}")
-        st.write("Vérifiez que le PDF n'est pas protégé par un mot de passe.")
+else:
+    st.info("👆 Chargez un fichier PDF pour commencer l'extraction")
+    st.markdown("""
+    ### 💡 Types de documents supportés
+    - ✅ Bilans comptables
+    - ✅ Factures fournisseurs
+    - ✅ Comptes de résultat
+    - ✅ Tableaux financiers
+    - ✅ Documents structurés avec texte
+    """)
